@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Canvas Shooter — Multi-bullet Demo</title>
+  <style>
+    :root{
+      --bg:#0f1724; --panel:#0b1220; --accent:#60a5fa; --muted:#94a3b8;
+    }
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Arial;}
+    body{display:flex;gap:16px;padding:16px;background:linear-gradient(180deg,var(--bg),#071025);}
+    .game {
+      flex:1;
+      min-width:420px;
+      background:linear-gradient(180deg,#071422,#0b1928);
+      border-radius:12px;
+      padding:12px;
+      box-shadow:0 8px 30px rgba(2,6,23,.6);
+      display:flex;flex-direction:column;
+    }
+    canvas{border-radius:8px;background:#07121a;display:block;width:100%;height:600px;}
+    .controls {
+      width:300px;
+      background:var(--panel);
+      color:white;
+      border-radius:12px;
+      padding:12px;
+      box-shadow:0 6px 22px rgba(2,6,23,.6);
+      display:flex;flex-direction:column;gap:10px;
+      min-height:200px;
+    }
+    label{font-size:13px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;}
+    .row{display:flex;gap:8px;align-items:center;}
+    input[type=range]{width:100%;}
+    button,select{background:#071a2b;color:white;border:1px solid rgba(255,255,255,.05);padding:8px;border-radius:8px;cursor:pointer;}
+    .hud{display:flex;gap:12px;align-items:center;font-size:14px;color:var(--muted)}
+    small{color:var(--muted);font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="game">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div class="hud">
+        <div id="modeLabel">Mode: Single</div>
+        <div id="ammoLabel">Ammo: ∞</div>
+      </div>
+      <div style="font-size:13px;color:var(--muted)">Click canvas to fire — hold mouse for auto (if auto enabled)</div>
+    </div>
+
+    <canvas id="c" width="1200" height="700"></canvas>
+
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;justify-content:space-between">
+      <small style="color:var(--muted)">Use: Mode select, adjust spread & bullets per shot. Space = toggle auto-fire.</small>
+      <div style="display:flex;gap:8px">
+        <button id="resetTargets">Reset Targets</button>
+        <button id="clearBullets">Clear Bullets</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label>Firing mode
+      <select id="mode">
+        <option value="single">Single</option>
+        <option value="burst">Burst (3)</option>
+        <option value="multi">Multi-bullet (Shot)</option>
+      </select>
+    </label>
+
+    <label>Bullets per shot <span id="bpsVal">1</span>
+      <input id="bulletsPerShot" type="range" min="1" max="12" value="1" />
+    </label>
+
+    <label>Spread (degrees) <span id="spreadVal">0</span>
+      <input id="spread" type="range" min="0" max="30" value="0" />
+    </label>
+
+    <label>Fire rate (shots/sec) <span id="rateVal">5</span>
+      <input id="fireRate" type="range" min="1" max="20" value="5" />
+    </label>
+
+    <label>Bullet speed <span id="speedVal">700</span> px/s
+      <input id="bulletSpeed" type="range" min="200" max="1400" value="700" />
+    </label>
+
+    <label>Bullet lifetime (s) <span id="lifeVal">1.4</span>
+      <input id="life" type="range" min="0.5" max="5" step="0.1" value="1.4" />
+    </label>
+
+    <label>
+      <div class="row">
+        <input type="checkbox" id="autoFire" />
+        <span>Auto-fire on hold</span>
+      </div>
+    </label>
+
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button id="addTarget">Add Target</button>
+      <button id="randomizeTargets">Random Targets</button>
+    </div>
+
+    <div style="margin-top:6px;color:var(--muted);font-size:13px">
+      Controls: Click to shoot • Hold mouse (if auto) • Space toggles auto-fire • R resets targets
+    </div>
+  </div>
+
+<script>
+(() => {
+  // Canvas setup
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  // UI elements
+  const modeSel = document.getElementById('mode');
+  const bulletsPerShot = document.getElementById('bulletsPerShot');
+  const spreadInput = document.getElementById('spread');
+  const fireRateInput = document.getElementById('fireRate');
+  const bulletSpeedInput = document.getElementById('bulletSpeed');
+  const lifeInput = document.getElementById('life');
+  const autoFireCheckbox = document.getElementById('autoFire');
+  const modeLabel = document.getElementById('modeLabel');
+  const ammoLabel = document.getElementById('ammoLabel');
+  const bpsVal = document.getElementById('bpsVal');
+  const spreadVal = document.getElementById('spreadVal');
+  const rateVal = document.getElementById('rateVal');
+  const speedVal = document.getElementById('speedVal');
+  const lifeVal = document.getElementById('lifeVal');
+
+  document.getElementById('resetTargets').addEventListener('click', initTargets);
+  document.getElementById('clearBullets').addEventListener('click', ()=> bullets.length=0);
+  document.getElementById('addTarget').addEventListener('click', addRandomTarget);
+  document.getElementById('randomizeTargets').addEventListener('click', ()=>{ targets=[]; for(let i=0;i<6;i++)addRandomTarget(); });
+
+  // game state
+  let mouse = {x: W/2, y: H/2, down:false};
+  let lastShot = 0;
+  let bullets = [];
+  let targets = [];
+
+  // defaults
+  let config = {
+    mode: 'single', // single / burst / multi
+    bulletsPerShot: 1,
+    spreadDeg: 0,
+    fireRate: 5, // shots/second
+    bulletSpeed: 700, // px/s
+    bulletLife: 1.4, // s
+    auto: false,
+  };
+
+  function updateConfigFromUI(){
+    config.mode = modeSel.value;
+    config.bulletsPerShot = Number(bulletsPerShot.value);
+    config.spreadDeg = Number(spreadInput.value);
+    config.fireRate = Number(fireRateInput.value);
+    config.bulletSpeed = Number(bulletSpeedInput.value);
+    config.bulletLife = Number(lifeInput.value);
+    config.auto = autoFireCheckbox.checked;
+
+    modeLabel.textContent = `Mode: ${capitalize(config.mode)}`;
+    bpsVal.textContent = config.bulletsPerShot;
+    spreadVal.textContent = config.spreadDeg;
+    rateVal.textContent = config.fireRate;
+    speedVal.textContent = config.bulletSpeed;
+    lifeVal.textContent = config.bulletLife;
+  }
+
+  // UI change listeners
+  [modeSel, bulletsPerShot, spreadInput, fireRateInput, bulletSpeedInput, lifeInput, autoFireCheckbox].forEach(el=>{
+    el.addEventListener('input', updateConfigFromUI);
+  });
+
+  // Helper
+  function rand(min,max){return Math.random()*(max-min)+min;}
+  function degToRad(d){return d*Math.PI/180;}
+  function now(){return performance.now()/1000;}
+
+  // add target
+  function addRandomTarget(){
+    const w = rand(40,120), h = rand(30,90);
+    const x = rand(300, W - w - 20);
+    const y = rand(40, H - h - 40);
+    targets.push({x,y,w,h,hit:false});
+  }
+  function initTargets(){
+    targets = [];
+    for(let i=0;i<6;i++) addRandomTarget();
+  }
+  initTargets();
+
+  // Shooting logic: spawnBullet
+  function spawnBullet(x,y,angle,spd,life){
+    bullets.push({
+      x, y,
+      vx: Math.cos(angle)*spd,
+      vy: Math.sin(angle)*spd,
+      born: now(),
+      life: life,
+      r: 3 + Math.random()*2,
+      color: '#ffd166'
+    });
+  }
+
+  // Fire one "shot" according to mode
+  function fireShot(originX, originY, aimAngle){
+    if(config.mode === 'single'){
+      // single: spawn bulletsPerShot bullets distributed in spread
+      spawnMulti(originX, originY, aimAngle);
+    } else if(config.mode === 'multi'){
+      // shotgun: spawn bulletsPerShot with random spread
+      spawnMulti(originX, originY, aimAngle);
+    } else if(config.mode === 'burst'){
+      // burst: spawn small bursts (3 shots) spaced by small delay using timers
+      const bursts = 3;
+      const interval = 0.08; // seconds between burst shots
+      for(let i=0;i<bursts;i++){
+        setTimeout(()=>{
+          spawnMulti(originX, originY, aimAngle);
+        }, i * interval * 1000);
+      }
+    }
+  }
+
+  function spawnMulti(originX, originY, aimAngle){
+    const n = config.bulletsPerShot;
+    const spread = degToRad(config.spreadDeg);
+    if(n === 1){
+      spawnBullet(originX, originY, aimAngle, config.bulletSpeed, config.bulletLife);
+      return;
+    }
+    // evenly distribute angles around aimAngle (plus random jitter so it's not too mechanical)
+    for(let i=0;i<n;i++){
+      const t = n===1 ? 0.5 : i/(n-1); // 0..1
+      // angle offset in range [-spread/2, +spread/2]
+      const offset = (t-0.5)*spread + rand(-spread*0.08, spread*0.08);
+      spawnBullet(originX, originY, aimAngle + offset, config.bulletSpeed*(1+rand(-0.05,0.05)), config.bulletLife);
+    }
+  }
+
+  // Input: track mouse
+  canvas.addEventListener('mousemove', e=>{
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - rect.left) * (canvas.width / rect.width);
+    mouse.y = (e.clientY - rect.top) * (canvas.height / rect.height);
+  });
+  canvas.addEventListener('mousedown', e=>{
+    mouse.down = true;
+    attemptFire();
+  });
+  canvas.addEventListener('mouseup', e=>{ mouse.down = false; });
+  window.addEventListener('mouseup', ()=> mouse.down=false);
+
+  // keyboard
+  window.addEventListener('keydown', e=>{
+    if(e.code === 'Space'){ autoFireCheckbox.checked = !autoFireCheckbox.checked; updateConfigFromUI(); }
+    if(e.key.toLowerCase() === 'r') initTargets();
+  });
+
+  // attempt to fire based on fire rate & auto
+  function attemptFire(){
+    const t = now();
+    const interval = 1 / config.fireRate;
+    if(t - lastShot < interval - 0.0001) return; // too soon
+    // compute aim angle from a fixed "gun" on left center of canvas
+    const origin = {x: 100, y: H/2};
+    const aimAngle = Math.atan2(mouse.y - origin.y, mouse.x - origin.x);
+    fireShot(origin.x, origin.y, aimAngle);
+    lastShot = t;
+  }
+
+  // continuous loop: update & draw
+  let lastFrame = now();
+  function loop(){
+    const t = now();
+    const dt = Math.min(0.05, t - lastFrame); // clamp dt
+    lastFrame = t;
+
+    // Auto-fire if holding and enabled
+    if(mouse.down && config.auto) attemptFire();
+
+    // If mouse clicked once and auto disabled, we already fired on mousedown
+    // Also allow continuous single-shot when holding but auto enabled above
+
+    // update bullets
+    for(let i=bullets.length-1;i>=0;i--){
+      const b = bullets[i];
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      if(t - b.born > b.life) bullets.splice(i,1);
+    }
+
+    // collisions: bullets with targets
+    for(let i=bullets.length-1;i>=0;i--){
+      const b = bullets[i];
+      for(let j=targets.length-1;j>=0;j--){
+        const tg = targets[j];
+        if(tg.hit) continue;
+        if(b.x > tg.x && b.x < tg.x+tg.w && b.y > tg.y && b.y < tg.y+tg.h){
+          tg.hit = true;
+          // remove bullet
+          bullets.splice(i,1);
+          break;
+        }
+      }
+    }
+
+    // render
+    draw();
+
+    requestAnimationFrame(loop);
+  }
+
+  function draw(){
+    // background
+    ctx.clearRect(0,0,W,H);
+    // sky / ground gradients
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#071425'); g.addColorStop(1,'#02121b');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W,H);
+
+    // draw targets
+    for(const tg of targets){
+      ctx.fillStyle = tg.hit ? '#264653' : '#ef476f';
+      ctx.fillRect(tg.x, tg.y, tg.w, tg.h);
+      ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+      ctx.strokeRect(tg.x, tg.y, tg.w, tg.h);
+      if(!tg.hit){
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.font = '12px Inter, system-ui';
+        ctx.fillText('Target', tg.x + 6, tg.y + 14);
+      } else {
+        ctx.fillStyle = '#ffffff88';
+        ctx.font = '12px Inter, system-ui';
+        ctx.fillText('Hit', tg.x + 6, tg.y + 14);
+      }
+    }
+
+    // draw bullets as small circles + trails
+    for(const b of bullets){
+      // trail
+      ctx.beginPath();
+      ctx.moveTo(b.x - b.vx*0.01, b.y - b.vy*0.01);
+      ctx.lineTo(b.x, b.y);
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = 'rgba(255,209,102,0.9)';
+      ctx.stroke();
+
+      // bullet head
+      ctx.beginPath();
+      ctx.fillStyle = b.color;
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // draw player/gun at left
+    const origin = {x:100, y:H/2};
+    // gun base
+    ctx.save();
+    // compute aim angle for gun rotation
+    const aimAngle = Math.atan2(mouse.y - origin.y, mouse.x - origin.x);
+    ctx.translate(origin.x, origin.y);
+    ctx.rotate(aimAngle);
+    // barrel
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillRect(0, -8, 80, 16);
+    // muzzle
+    ctx.fillStyle = '#0f1724';
+    ctx.fillRect(80, -6, 14, 12);
+    // stock/back
+    ctx.fillStyle = '#001219';
+    ctx.fillRect(-36, -10, 36, 20);
+    ctx.restore();
+
+    // Crosshair at mouse
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    ctx.moveTo(mouse.x-10, mouse.y);
+    ctx.lineTo(mouse.x+10, mouse.y);
+    ctx.moveTo(mouse.x, mouse.y-10);
+    ctx.lineTo(mouse.x, mouse.y+10);
+    ctx.stroke();
+
+    // UI overlay labels
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = '14px Inter, system-ui';
+    ctx.fillText(`Mode: ${capitalize(config.mode)}`, 16, 22);
+    ctx.fillText(`Bullets/shot: ${config.bulletsPerShot}`, 16, 40);
+    ctx.fillText(`Spread: ${config.spreadDeg}°`, 16, 58);
+    ctx.fillText(`Rate: ${config.fireRate} shots/s`, 16, 76);
+    ctx.fillText(`Bullets active: ${bullets.length}`, 16, 94);
+  }
+
+  // helpers
+  function capitalize(s){ return s.charAt(0).toUpperCase()+s.slice(1); }
+
+  // update from UI initially
+  updateConfigFromUI();
+
+  // Main: implement click-to-fire respecting fireRate
+  canvas.addEventListener('mousedown', (e)=>{
+    // do immediate shot
+    if(!config.auto) attemptFire();
+  });
+
+  // Loop that manages single-shot fire when holding + auto = true
+  setInterval(()=> {
+    if(mouse.down && config.auto) attemptFire();
+  }, 10);
+
+  // Periodic auto-attempt for respecting fire rate when mouse held
+  function autoAttemptLoop(){
+    if(mouse.down && config.auto){
+      attemptFire();
+    }
+    requestAnimationFrame(autoAttemptLoop);
+  }
+  autoAttemptLoop();
+
+  // when user toggles mode "multi" but bulletsPerShot slider may be 1, show update by showing label
+  // update UI labels live
+  setInterval(()=> {
+    updateConfigFromUI();
+  }, 150);
+
+  // fireShot on interval respecting fireRate (this ensures clicking repeatedly will follow rate)
+  // but attemptFire already handles the timing.
+
+  // initialize some targets
+  initTargets();
+
+  // start drawing loop
+  loop();
+
+})();
+</script>
+</body>
+</html>
